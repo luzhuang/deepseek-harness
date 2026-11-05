@@ -18,6 +18,22 @@ export async function assistantUpdates(
   session: Session,
   event: SessionEvent<'assistant/message'>,
 ): Promise<SessionUpdate[]> {
+  const updates = await assistantContentUpdates(ctx, event)
+  const usage = usageUpdate(ctx, session, event)
+  if (usage !== undefined) updates.push(usage)
+  return updates
+}
+
+/**
+ * Translate assistant content without measuring current usage for past turns.
+ * @param ctx - context carrying the attachment store.
+ * @param event - committed assistant message.
+ * @returns ordered thought and message updates.
+ */
+export async function assistantContentUpdates(
+  ctx: Context,
+  event: SessionEvent<'assistant/message'>,
+): Promise<SessionUpdate[]> {
   const updates: SessionUpdate[] = []
   for (const block of event.data.message.content) {
     if (block.type === 'reasoning') {
@@ -39,8 +55,6 @@ export async function assistantUpdates(
       })
     }
   }
-  const usage = usageUpdate(ctx, session, event)
-  if (usage !== undefined) updates.push(usage)
   return updates
 }
 

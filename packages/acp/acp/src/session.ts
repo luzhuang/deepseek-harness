@@ -19,6 +19,7 @@ import { turnEndToStopReason } from './codec.ts'
 import { mountAcpMcpServers } from './mcp.ts'
 import { AcpModelControl } from './model-control.ts'
 import { assistantUpdates, toolCallUpdate, toolResultUpdate } from './updates.ts'
+import { replayUpdates } from './replay.ts'
 
 /** Subagent completion and teardown without depending on the subagent package. */
 interface SubagentLifecycle {
@@ -368,33 +369,25 @@ export class AcpSession {
   }
 
   /**
-   * Replay one stored transcript to the client as standard ACP updates so a
-   * reconnecting client can rebuild the conversation it already had. Live
-   * projection never emits `user_message_chunk` (the client authored those
-   * turns), so replay synthesizes them here; every other event reuses
-   * {@link onSessionEvent} for rendering parity with the live stream. Bookkeeping
-   * events (`turn/start`, `turn/end`, usage) are skipped: replay holds no turn.
+   * Serialize transcript replay with output draining and session teardown.
+   * Failure or cancellation rejects the load; emitted updates may be partial.
    * @param events - committed events read from the stored session log, in order.
+   * @param signal - optional load-request cancellation.
+   * @returns completion after every transcript update is delivered.
    */
-  async replayHistory(events: readonly SessionEvent[]): Promise<void> {
-    for (const event of events) {
-      if (event.type === 'user/message') {
-        for (const block of event.data.content) {
-          if (block.type !== 'text' || block.text.length === 0) continue
-          await this.notify({
-            sessionId: this.agent.session.id,
-            update: {
-              sessionUpdate: 'user_message_chunk',
-              messageId: event.data.id,
-              content: { type: 'text', text: block.text },
-            },
-          })
-        }
-      } else if (event.type === 'assistant/message' || event.type === 'tool/call' || event.type === 'tool/result') {
-        this.onSessionEvent(this.agent.session, event)
+  replayHistory(events: readonly SessionEvent[], signal?: AbortSignal): Promise<void> {
+    this.assertActive()
+    const delivery = this.outputTail.then(async () => {
+      for await (const update of replayUpdates(this.ctx, events, signal)) {
+        this.assertActive()
+        signal?.throwIfAborted()
+        await this.notify({ sessionId: this.agent.session.id, update })
       }
-    }
-    await this.outputTail
+      signal?.throwIfAborted()
+    })
+    // The load caller owns rejection; teardown only needs to join settled work.
+    this.outputTail = delivery.catch((_replayFailure: unknown) => {})
+    return delivery
   }
 
   /**

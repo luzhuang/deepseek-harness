@@ -76,6 +76,8 @@ One connection can run several sessions at once, each independent. The calls a c
 
 Session listing and resume admit ordinary forks, including historical logs with `parentSession`; `origin: subagent` remains excluded.
 
+Loading replays append-origin human messages (including images), assistant content, and tools in log order. Injected context and model-only replacements are omitted. Prompt admission stays closed until replay completes. Cancellation, conversion failure, or delivery failure rejects the load and releases its Agent; the client must discard partial replay before retrying. Bridge disposal aborts and joins pending loads.
+
 A prompt remains in flight while managed descendants run, while their results trigger later root turns, and while committed output drains. Root work accepted during that output drain joins the same activity interval before completion. Its completion includes the latest root stop reason and any assistant output delivery failure; only the original prompt turn pins the model selection captured at admission. Cancellation stops the root activity present at that call and waits for that activity and its queued output. Later child messages may start autonomous work and do not delay the cancelled response; the session remains available for later prompts. Idle descendants with parked inbox messages remain resident but do not delay prompt completion. Closing the session also drains its descendants.
 
 A failure to append `turn/start` or `turn/end` rejects the prompt even when a preceding turn completed.
