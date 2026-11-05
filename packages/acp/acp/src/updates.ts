@@ -1,7 +1,7 @@
 /** Standard ACP updates derived from committed DSH session events. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionUpdate, ToolCallContent } from '@agentclientprotocol/sdk'
+import type { SessionUpdate, ToolCallContent, ToolKind } from '@agentclientprotocol/sdk'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-token-meter'
 import { assistantBlockToAcp } from './content.ts'
@@ -45,6 +45,39 @@ export async function assistantUpdates(
 }
 
 /**
+ * Map a harness tool name onto ACP's tool-kind vocabulary so clients can pick
+ * the right icon, grouping, and affordance instead of rendering every call as
+ * a generic "other" entry. Unknown tools stay `other` by design.
+ * @param name - the model-facing tool name from the committed call fact.
+ * @returns the closest standard ACP tool kind.
+ */
+export function toolKind(name: string): ToolKind {
+  switch (name) {
+    case 'bash':
+    case 'shell':
+    case 'execute':
+      return 'execute'
+    case 'read':
+      return 'read'
+    case 'edit':
+    case 'write':
+    case 'multiedit':
+      return 'edit'
+    case 'grep':
+    case 'glob':
+    case 'web_search':
+      return 'search'
+    case 'web_fetch':
+      return 'fetch'
+    case 'todo_write':
+    case 'todo_read':
+      return 'think'
+    default:
+      return 'other'
+  }
+}
+
+/**
  * Start one generic ACP tool lifecycle from the durable call fact.
  * @param event - committed DSH tool-call event.
  * @returns the standard generic tool-call update.
@@ -54,7 +87,7 @@ export function toolCallUpdate(event: SessionEvent<'tool/call'>): SessionUpdate 
     sessionUpdate: 'tool_call',
     toolCallId: event.data.callId,
     title: event.data.name,
-    kind: 'other',
+    kind: toolKind(event.data.name),
     status: 'in_progress',
     rawInput: parseToolArguments(event.data.arguments),
   }

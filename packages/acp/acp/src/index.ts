@@ -33,6 +33,8 @@ import {
   type InitializeResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
+  type LoadSessionRequest,
+  type LoadSessionResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
@@ -47,6 +49,7 @@ import {
 } from '@agentclientprotocol/sdk'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import { readColdSessionLog } from '@deepseek-ai/dsh-session-query'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { supportsAcpImagePrompts } from './content.ts'
@@ -184,6 +187,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         protocolVersion: PROTOCOL_VERSION,
         agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
         agentCapabilities: {
+          loadSession: true,
           mcpCapabilities: { http: true },
           promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
           sessionCapabilities: { close: {}, list: {}, resume: {} },
@@ -290,6 +294,64 @@ export function apply(ctx: Context, config: AcpConfig): void {
       })().finally(() => { activating.delete(sessionId) })
     },
 
+    /**
+     * Restore one persisted session and replay its transcript to the client.
+     * `session/load` differs from `session/resume` only in history delivery: the
+     * runtime state is identical, but the client receives the stored
+     * conversation as standard updates so a reopened agent is not blank.
+     * @param params - stored session id, working directory, and MCP servers.
+     * @param signal - request cancellation for restore and replay work.
+     * @returns the restored session's configuration options.
+     */
+    async loadSession(params: LoadSessionRequest, signal: AbortSignal): Promise<LoadSessionResponse> {
+      assertOpen()
+      validateWorkspaceParams(params)
+      const sessionId = brandString<SessionId>(params.sessionId)
+      if (sessions.has(sessionId) || activating.has(sessionId) || ctx.sessions.get(sessionId) !== undefined) {
+        throw invalidParams(`session is already active: ${sessionId}`)
+      }
+      activating.add(sessionId)
+      return (async (): Promise<LoadSessionResponse> => {
+        const persisted = (await persistence.stat(sessionId, { signal }))?.header
+        if (persisted === undefined || persisted.origin === 'subagent') {
+          throw invalidParams(`session is not loadable: ${sessionId}`)
+        }
+        if (!await sameDirectory(persisted.cwd, params.cwd)) {
+          throw invalidParams(`session cwd does not match: ${params.cwd}`)
+        }
+        let record: AcpSession
+        try {
+          record = await AcpSession.resume(ctx, {
+            sessionId,
+            cwd: params.cwd,
+            mcpServers: params.mcpServers ?? [],
+            agentOptions: agentOptions(config),
+            signal,
+            notify,
+          })
+        } catch (error: unknown) {
+          if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
+          throw error
+        }
+        /* v8 ignore next 4 -- a real stdio close can race an in-flight load. */
+        if (closed) {
+          await record.close('connection closed during session/load')
+          throw internalError('connection closed during session/load')
+        }
+        sessions.set(sessionId, record)
+        try {
+          const configOptions = await record.configOptions(signal)
+          const log = await readColdSessionLog(persistence, sessionId, signal)
+          await record.replayHistory(log.events)
+          return { configOptions }
+        } catch (error: unknown) {
+          sessions.delete(sessionId)
+          await record.close('session/load failed after activation')
+          throw error
+        }
+      })().finally(() => { activating.delete(sessionId) })
+    },
+
     async listSessions(params: ListSessionsRequest, signal: AbortSignal): Promise<ListSessionsResponse> {
       assertOpen()
       if (params.cwd !== undefined && params.cwd !== null && !isAbsolute(params.cwd)) {
@@ -384,6 +446,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
     .onRequest(methods.agent.session.new, ({ params, signal }) => implementation.newSession(params, signal))
     .onRequest(methods.agent.session.list, ({ params, signal }) => implementation.listSessions(params, signal))
     .onRequest(methods.agent.session.resume, ({ params, signal }) => implementation.resumeSession(params, signal))
+    .onRequest(methods.agent.session.load, ({ params, signal }) => implementation.loadSession(params, signal))
     .onRequest(methods.agent.session.close, ({ params }) => implementation.closeSession(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params, signal }) => implementation.setSessionConfigOption(params, signal))
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => implementation.prompt(params, signal))

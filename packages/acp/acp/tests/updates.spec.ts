@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { ToolCallId, MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionSeq, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { assistantUpdates, toolCallUpdate, toolResultUpdate } from '../src/updates.ts'
+import { assistantUpdates, toolCallUpdate, toolKind, toolResultUpdate } from '../src/updates.ts'
 
 /** Minimal committed assistant event for pure update projection tests. */
 function assistantEvent(
@@ -89,5 +89,34 @@ describe('standard ACP update projection', () => {
       status: 'failed',
       content: [],
     })
+  })
+})
+
+describe('tool kind projection', () => {
+  it('maps harness tool names onto ACP kinds and leaves unknown tools generic', () => {
+    expect(toolKind('bash')).toBe('execute')
+    expect(toolKind('shell')).toBe('execute')
+    expect(toolKind('execute')).toBe('execute')
+    expect(toolKind('read')).toBe('read')
+    expect(toolKind('edit')).toBe('edit')
+    expect(toolKind('write')).toBe('edit')
+    expect(toolKind('multiedit')).toBe('edit')
+    expect(toolKind('grep')).toBe('search')
+    expect(toolKind('glob')).toBe('search')
+    expect(toolKind('web_search')).toBe('search')
+    expect(toolKind('web_fetch')).toBe('fetch')
+    expect(toolKind('todo_write')).toBe('think')
+    expect(toolKind('todo_read')).toBe('think')
+    expect(toolKind('some-future-tool')).toBe('other')
+  })
+
+  it('projects a concrete kind instead of a generic tool call', () => {
+    const call = toolCallUpdate({
+      type: 'tool/call',
+      seq: SessionSeq(0),
+      time: 0,
+      data: { turn: 1, step: 1, callId: ToolCallId('call-bash'), name: 'bash', arguments: '{"command":"ls"}' },
+    })
+    expect(call).toMatchObject({ sessionUpdate: 'tool_call', kind: 'execute', title: 'bash' })
   })
 })

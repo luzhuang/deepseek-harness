@@ -368,6 +368,36 @@ export class AcpSession {
   }
 
   /**
+   * Replay one stored transcript to the client as standard ACP updates so a
+   * reconnecting client can rebuild the conversation it already had. Live
+   * projection never emits `user_message_chunk` (the client authored those
+   * turns), so replay synthesizes them here; every other event reuses
+   * {@link onSessionEvent} for rendering parity with the live stream. Bookkeeping
+   * events (`turn/start`, `turn/end`, usage) are skipped: replay holds no turn.
+   * @param events - committed events read from the stored session log, in order.
+   */
+  async replayHistory(events: readonly SessionEvent[]): Promise<void> {
+    for (const event of events) {
+      if (event.type === 'user/message') {
+        for (const block of event.data.content) {
+          if (block.type !== 'text' || block.text.length === 0) continue
+          await this.notify({
+            sessionId: this.agent.session.id,
+            update: {
+              sessionUpdate: 'user_message_chunk',
+              messageId: event.data.id,
+              content: { type: 'text', text: block.text },
+            },
+          })
+        }
+      } else if (event.type === 'assistant/message' || event.type === 'tool/call' || event.type === 'tool/result') {
+        this.onSessionEvent(this.agent.session, event)
+      }
+    }
+    await this.outputTail
+  }
+
+  /**
    * Correlate an accepted user message with its Agent turn.
    * @param message - claimed durable inbox message.
    * @param turn - allocated Agent turn.
