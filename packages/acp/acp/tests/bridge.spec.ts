@@ -59,7 +59,7 @@ describe('automation-only ACP bridge', () => {
     })
   })
 
-  it('advertises image prompts only with an exact capable route and attachment store', async () => {
+  it('advertises image prompts with an image-capable route and attachment store', async () => {
     harness = await makeBridgeHarness({ imageCapable: true })
     const capable = await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     expect(capable.agentCapabilities?.promptCapabilities?.image).toBe(true)
@@ -68,6 +68,36 @@ describe('automation-only ACP bridge', () => {
     harness = await makeBridgeHarness({ imageCapable: true, attachments: false })
     const noStore = await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     expect(noStore.agentCapabilities?.promptCapabilities?.image).toBe(false)
+  })
+
+  it('advertises images without an ACP route when the default model supplies a capable selection', async () => {
+    harness = await makeBridgeHarness({
+      config: { provider: undefined, model: undefined },
+      imageCapable: true,
+      script: [textResponse('image received')],
+    })
+    harness.ctx.on('agent/created', ({ agent }) => { agent.model.select({ provider: 'mock', model: 'mock' }) })
+    const initialized = await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    expect(initialized.agentCapabilities?.promptCapabilities?.image).toBe(true)
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.prompt({ sessionId, prompt: [{ type: 'image', data: 'AQ==', mimeType: 'image/png' }] })
+    expect(harness.adapter.requests[0]?.messages.at(-1)?.content).toMatchObject([
+      { type: 'image', attachment: { mediaType: 'image/png' } },
+    ])
+  })
+
+  it('admits images after switching from a text default to an advertised image model', async () => {
+    harness = await makeBridgeHarness({ config: { model: 'plain' }, imageCapable: true, script: [textResponse('image received')] })
+    const initialized = await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    expect(initialized.agentCapabilities?.promptCapabilities?.image).toBe(true)
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    await harness.client.setSessionConfigOption({ sessionId, configId: 'model', value: JSON.stringify(['mock', 'mock']) })
+    const prompt = [{ type: 'image', data: 'AQ==', mimeType: 'image/png' }] as const
+    await harness.client.prompt({ sessionId, prompt: [...prompt] })
+    expect(harness.adapter.requests[0]?.messages.at(-1)?.content[0]).toMatchObject({ type: 'image' })
+    await harness.client.setSessionConfigOption({ sessionId, configId: 'model', value: JSON.stringify(['mock', 'plain']) })
+    await expect(harness.client.prompt({ sessionId, prompt: [...prompt] })).rejects.toThrow(/does not declare image input/)
+    expect(harness.adapter.requests).toHaveLength(1)
   })
 
   it('negotiates an unsupported version and accepts the required no-op authentication call', async () => {

@@ -3,9 +3,14 @@
 # Adds the durable attachment store the read_image tool
 # commits through. The store resolves its root from $DSH_HOME, which the
 # snapshot harness scopes per run, so the patch itself carries no attachment
-# path. The ACP row selects the shipped vision model.
+# path. The default-model plugin selects the vision route; ACP has no explicit
+# route, so initialization must discover image support from selectable models.
 - id: acp
   name: '@deepseek-ai/dsh-acp'
+  config: {}
+
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: deepseek-official
     model: deepseek-v4-flash-vision-exp

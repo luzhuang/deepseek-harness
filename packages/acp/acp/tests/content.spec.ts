@@ -58,31 +58,55 @@ function admissionFixture(options: {
   return { ctx, route, saveImages, resolveModelInfo }
 }
 
+/** Limit capability fixtures to the two optional services read by admission. */
+function capabilityContext(attachments: unknown, llm: unknown): Context {
+  return {
+    get: (name: string) => name === 'attachments' ? attachments : name === 'llm' ? llm : undefined,
+  } as unknown as Context
+}
+
 describe('ACP rich content codec', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('advertises image input only when every deployment prerequisite is explicit', async () => {
-    const absent = (attachments: unknown, llm: unknown): Context => ({
-      get: (name: string) => name === 'attachments' ? attachments : name === 'llm' ? llm : undefined,
-    }) as unknown as Context
+  it('requires durable media support and a known image-capable model', async () => {
     const store = { imageLimits: { mediaTypes: ['image/png'] } }
     const noMediaStore = { imageLimits: { mediaTypes: [] } }
-    const imageLlm = { resolveModelInfo: vi.fn().mockResolvedValue({ inputModalities: ['text', 'image'] }) }
-    const textLlm = { resolveModelInfo: vi.fn().mockResolvedValue({ inputModalities: ['text'] }) }
-    const unknownLlm = { resolveModelInfo: vi.fn().mockResolvedValue({}) }
-    const brokenLlm = { resolveModelInfo: vi.fn().mockRejectedValue(new Error('catalog down')) }
+    const noCatalog = { listProviders: () => [], listModels: vi.fn().mockResolvedValue([]) }
+    const imageLlm = { ...noCatalog, resolveModelInfo: vi.fn().mockResolvedValue({ inputModalities: ['text', 'image'] }) }
+    const textLlm = { ...noCatalog, resolveModelInfo: vi.fn().mockResolvedValue({ inputModalities: ['text'] }) }
+    const unknownLlm = { ...noCatalog, resolveModelInfo: vi.fn().mockResolvedValue({}) }
+    const brokenLlm = { ...noCatalog, resolveModelInfo: vi.fn().mockRejectedValue(new Error('catalog down')) }
 
-    await expect(supportsAcpImagePrompts(absent(undefined, imageLlm), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, undefined), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, imageLlm), undefined, 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, imageLlm), 'p', undefined)).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(noMediaStore, imageLlm), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, brokenLlm), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, unknownLlm), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, textLlm), 'p', 'm')).resolves.toBe(false)
-    await expect(supportsAcpImagePrompts(absent(store, imageLlm), 'p', 'm')).resolves.toBe(true)
+    await expect(supportsAcpImagePrompts(capabilityContext(undefined, imageLlm), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, undefined), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, imageLlm), undefined, 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, imageLlm), 'p', undefined)).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(noMediaStore, imageLlm), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, brokenLlm), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, unknownLlm), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, textLlm), 'p', 'm')).resolves.toBe(false)
+    await expect(supportsAcpImagePrompts(capabilityContext(store, imageLlm), 'p', 'm')).resolves.toBe(true)
+  })
+
+  it('uses selectable image models when the initial route is absent, text-only, or unavailable', async () => {
+    const listModels = vi.fn(async (provider: string) => {
+      if (provider === 'broken') throw new Error('provider unavailable')
+      return [{ provider, id: 'vision', name: 'Vision', inputModalities: ['text', 'image'] as const }]
+    })
+    const llm = {
+      listProviders: () => [{ id: 'broken', name: 'Broken' }, { id: 'vision', name: 'Vision' }],
+      listModels,
+      resolveModelInfo: vi.fn().mockResolvedValue({ inputModalities: ['text'] }),
+    }
+    const store = { imageLimits: { mediaTypes: ['image/png'] } }
+    const ctx = capabilityContext(store, llm)
+    await expect(supportsAcpImagePrompts(ctx, undefined, undefined)).resolves.toBe(true)
+    await expect(supportsAcpImagePrompts(ctx, 'text', 'plain')).resolves.toBe(true)
+    llm.resolveModelInfo.mockRejectedValueOnce(new Error('initial route unavailable'))
+    await expect(supportsAcpImagePrompts(ctx, 'missing', 'model')).resolves.toBe(true)
+    expect(listModels).toHaveBeenCalledWith('vision')
   })
 
   it('validates every rich wire block before any image write', async () => {

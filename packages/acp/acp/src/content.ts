@@ -79,12 +79,12 @@ async function assertImageRoute(ctx: Context, route: ModelSelection | undefined,
 }
 
 /**
- * Determine whether initialization may truthfully advertise inline image prompts.
- * Unknown service, route, capability, or deployment media support is negative.
+ * Advertise images when durable storage and an initial or selectable route support
+ * them. Each prompt separately validates its current session model selection.
  * @param ctx - bridge context carrying optional attachment and model services.
- * @param provider - configured provider route used for newly created sessions.
- * @param model - configured exact model id used for newly created sessions.
- * @returns whether this bridge can admit images at initialization time.
+ * @param provider - optional configured provider to check before the catalog.
+ * @param model - optional configured exact model to check before the catalog.
+ * @returns whether a known image-capable route is available to this connection.
  */
 export async function supportsAcpImagePrompts(
   ctx: Context,
@@ -93,14 +93,25 @@ export async function supportsAcpImagePrompts(
 ): Promise<boolean> {
   const attachments = ctx.get('attachments')
   const llm = ctx.get('llm')
-  if (attachments === undefined || llm === undefined || provider === undefined || model === undefined) return false
+  if (attachments === undefined || llm === undefined) return false
   if (!attachments.imageLimits.mediaTypes.some(mediaType => IMAGE_MEDIA_TYPES.includes(mediaType))) return false
-  try {
-    const info = await llm.resolveModelInfo(provider, model)
-    return info.inputModalities?.includes('image') === true
-  } catch {
-    return false
+  if (provider !== undefined && model !== undefined) {
+    try {
+      const info = await llm.resolveModelInfo(provider, model)
+      if (info.inputModalities?.includes('image') === true) return true
+    } catch (_initialRouteUnavailable) {
+      // Other selectable routes can still support images.
+    }
   }
+  for (const candidate of llm.listProviders()) {
+    try {
+      const models = await llm.listModels(candidate.id)
+      if (models.some(info => info.inputModalities?.includes('image') === true)) return true
+    } catch (_providerCatalogUnavailable) {
+      // A failed provider does not remove the remaining providers' capabilities.
+    }
+  }
+  return false
 }
 
 /** Render one baseline resource link into the core's current text vocabulary. */
